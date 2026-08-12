@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Диагностика камеры</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/html5-qrcode"></script>
+<style>
+    body { font-family: monospace; background:#121212; color:#0f0; margin:0; padding:12px; font-size:13px; }
+    h3 { color:#fff; font-family: Arial, sans-serif; }
+    #log { white-space: pre-wrap; word-break: break-all; background:#000; padding:10px; border-radius:8px; min-height:200px; }
+    .err { color:#ff5555; }
+    .ok { color:#55ff55; }
+    .warn { color:#ffcc00; }
+    video { width:100%; max-width:300px; margin-top:10px; border-radius:8px; display:none; }
+    button { margin-top:10px; padding:10px 20px; background:#e53935; color:#fff; border:none; border-radius:8px; font-weight:bold; }
+</style>
+</head>
+<body>
+<h3>🔍 Диагностика камеры</h3>
+<button onclick="runTest()">Запустить тест заново</button>
+<div id="log"></div>
+<video id="preview" autoplay playsinline muted></video>
+ 
+<script>
+const logEl = document.getElementById('log');
+function log(msg, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+}
+ 
+async function runTest() {
+    logEl.innerHTML = '';
+    log('=== Базовая информация ===');
+    log('URL: ' + location.href);
+    log('Протокол: ' + location.protocol, location.protocol === 'https:' ? 'ok' : 'err');
+    log('User-Agent: ' + navigator.userAgent);
+ 
+    log('');
+    log('=== Telegram WebApp ===');
+    try {
+        const tg = window.Telegram && window.Telegram.WebApp;
+        if (!tg) {
+            log('window.Telegram.WebApp не найден', 'err');
+        } else {
+            log('Telegram.WebApp version: ' + tg.version, 'ok');
+            log('platform: ' + tg.platform);
+            log('initData присутствует: ' + (tg.initData ? 'да' : 'нет'));
+        }
+    } catch (e) {
+        log('Ошибка при чтении Telegram.WebApp: ' + e, 'err');
+    }
+ 
+    log('');
+    log('=== navigator.mediaDevices ===');
+    if (!navigator.mediaDevices) {
+        log('navigator.mediaDevices ОТСУТСТВУЕТ — WebView не даёт доступ к API камеры вообще (обычно из-за http:// или очень старой версии WebView/Telegram)', 'err');
+        return;
+    }
+    log('navigator.mediaDevices доступен', 'ok');
+ 
+    log('');
+    log('=== enumerateDevices (список устройств) ===');
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        log('Найдено видео-устройств: ' + cams.length, cams.length ? 'ok' : 'warn');
+        cams.forEach((c, i) => log('  [' + i + '] label="' + (c.label || '(пусто, т.к. нет разрешения)') + '" id=' + c.deviceId.slice(0,8)));
+        if (cams.length === 0) {
+            log('Если список пуст даже после разрешения — либо у устройства нет камеры, либо ОС/Telegram блокирует её на уровне системы', 'warn');
+        }
+    } catch (e) {
+        log('Ошибка enumerateDevices: ' + e.name + ' — ' + e.message, 'err');
+    }
+ 
+    log('');
+    log('=== Прямой запрос getUserMedia({video:true}) ===');
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        log('УСПЕХ: поток получен, значит камера и разрешения работают на уровне браузера/WebView', 'ok');
+        const video = document.getElementById('preview');
+        video.srcObject = stream;
+        video.style.display = 'block';
+        log('Если видео ниже отображается — проблема НЕ в доступе к камере, а конкретно в библиотеке html5-qrcode или её конфигурации', 'ok');
+    } catch (e) {
+        log('ОШИБКА: ' + e.name, 'err');
+        log('Сообщение: ' + e.message, 'err');
+        if (e.name === 'NotAllowedError') {
+            log('→ Разрешение на камеру отклонено. Проверьте: Настройки Android → Приложения → Telegram → Разрешения → Камера → Разрешить', 'warn');
+        } else if (e.name === 'NotFoundError') {
+            log('→ Камера физически не найдена системой', 'warn');
+        } else if (e.name === 'NotReadableError') {
+            log('→ Камера занята другим приложением или аппаратная ошибка', 'warn');
+        } else if (e.name === 'SecurityError') {
+            log('→ Скорее всего страница открыта не по https://', 'warn');
+        }
+    }
+ 
+    log('');
+    log('=== html5-qrcode: Html5Qrcode.getCameras() ===');
+    try {
+        if (typeof Html5Qrcode === 'undefined') {
+            log('Библиотека html5-qrcode не загрузилась (проверьте интернет/CSP)', 'err');
+        } else {
+            const cams = await Html5Qrcode.getCameras();
+            log('Библиотека видит камер: ' + cams.length, cams.length ? 'ok' : 'err');
+            cams.forEach((c, i) => log('  [' + i + '] ' + c.label));
+        }
+    } catch (e) {
+        log('Ошибка Html5Qrcode.getCameras(): ' + e, 'err');
+    }
+ 
+    log('');
+    log('=== Итог ===');
+    log('Прокрутите вверх и посмотрите, на каком именно шаге появилась первая красная строка — это и есть точная причина.');
+}
+ 
+window.onload = function() {
+    if (window.Telegram && window.Telegram.WebApp) {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+    }
+    runTest();
+};
+</script>
+</body>
+</html>
