@@ -10,7 +10,7 @@
         body {
             font-family: sans-serif;
             margin: 0;
-            padding: 0;
+            padding: 10px;
             background-color: #212121;
             color: white;
             display: flex;
@@ -18,92 +18,161 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            overflow: hidden;
         }
         #reader {
             width: 100%;
-            max-width: 400px;
+            max-width: 500px;
+            padding: 0;
+            margin: 0;
+        }
+        #reader video {
+            border-radius: 10px;
+        }
+        .status {
+            margin-top: 10px;
             padding: 10px;
-        }
-        button {
-            padding: 15px 30px;
-            font-size: 16px;
-            background-color: #8774e1;
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 20px;
-        }
-        button:hover {
-            background-color: #7763d1;
-        }
-        #result {
-            margin-top: 20px;
-            padding: 15px;
             background-color: #333;
             border-radius: 8px;
             text-align: center;
-            display: none;
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
-
-    <h2>📱 Сканер QR-кодов</h2>
     <div id="reader"></div>
-    <button onclick="stopScanner()">Остановить сканер</button>
-    <div id="result"></div>
+    <div class="status" id="status">📸 Наведите камеру на штрихкод</div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
 
-        let html5QrcodeScanner = null;
+        let html5QrCode = null;
+        let isProcessing = false;
+        let lastScanTime = 0;
+        const SCAN_COOLDOWN = 1000; // 1 секунда между сканированиями
 
-        function onScanSuccess(decodedText, decodedResult) {
-            console.log(`Код отсканирован: ${decodedText}`);
-            document.getElementById('result').innerHTML = `✅ Результат: <b>${decodedText}</b>`;
-            document.getElementById('result').style.display = 'block';
+        async function onScanSuccess(decodedText, decodedResult) {
+            const now = Date.now();
             
-            // Отправляем результат в бота
-            tg.sendData(decodedText);
-            tg.close();
-        }
-
-        function onScanError(error) {
-            // Ignore errors for scanning
-        }
-
-        function initScanner() {
-            html5QrcodeScanner = new Html5QrcodeScanner(
-                "reader",
-                {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    videoConstraints: {
-                        facingMode: { ideal: "environment" }
-                    },
-                    experimentalFeatures: {
-                        useBarCodeDetectorIfSupported: true
-                    }
-                },
-                /* verbose= */ false
-            );
-            html5QrcodeScanner.render(onScanSuccess, onScanError);
-        }
-
-        function stopScanner() {
-            if (html5QrcodeScanner) {
-                html5QrcodeScanner.clear();
-                tg.close();
+            // Защита от множественных срабатываний
+            if (isProcessing || (now - lastScanTime < SCAN_COOLDOWN)) {
+                return;
+            }
+            
+            isProcessing = true;
+            lastScanTime = now;
+            
+            // Очистка текста
+            const cleanText = decodedText.trim();
+            
+            // Показываем результат
+            document.getElementById('status').innerHTML = 
+                `✅ <b>Отсканировано!</b><br><small>${cleanText}</small>`;
+            document.getElementById('status').style.backgroundColor = '#4CAF50';
+            
+            // Мгновенная отправка в бота
+            try {
+                tg.sendData(cleanText);
+                
+                // Закрываем через минимальную задержку
+                setTimeout(() => {
+                    tg.close();
+                }, 100);
+                
+            } catch (error) {
+                console.error('Ошибка отправки:', error);
+                document.getElementById('status').innerHTML = 
+                    '❌ Ошибка отправки данных';
+                document.getElementById('status').style.backgroundColor = '#f44336';
+                isProcessing = false;
             }
         }
 
-        window.onload = function() {
-            initScanner();
-        };
+        function onScanError(error) {
+            // Игнорируем ошибки сканирования
+        }
+
+        async function initScanner() {
+            try {
+                html5QrCode = new Html5Qrcode("reader");
+                
+                const config = {
+                    fps: 30, // Увеличиваем FPS для быстрого сканирования
+                    qrbox: { width: 300, height: 200 }, // Уменьшаем область сканирования
+                    aspectRatio: 1.5,
+                    formatsToSupport: [
+                        // Поддерживаем только нужные форматы для скорости
+                        Html5QrcodeSupportedFormats.EAN_13,
+                        Html5QrcodeSupportedFormats.EAN_8,
+                        Html5QrcodeSupportedFormats.CODE_128,
+                        Html5QrcodeSupportedFormats.CODE_39,
+                        Html5QrcodeSupportedFormats.QR_CODE,
+                        Html5QrcodeSupportedFormats.UPC_A,
+                        Html5QrcodeSupportedFormats.UPC_E,
+                        Html5QrcodeSupportedFormats.CODABAR,
+                        Html5QrcodeSupportedFormats.DATA_MATRIX,
+                        Html5QrcodeSupportedFormats.ITF,
+                    ]
+                };
+
+                await html5QrCode.start(
+                    { facingMode: "environment" },
+                    config,
+                    onScanSuccess,
+                    onScanError
+                );
+
+                // Применяем оптимизации к видео
+                const video = document.querySelector('#reader video');
+                if (video) {
+                    video.setAttribute('playsinline', 'true');
+                    video.setAttribute('autoplay', 'true');
+                    
+                    // Пытаемся установить высокое качество
+                    const stream = video.srcObject;
+                    if (stream) {
+                        const track = stream.getVideoTracks()[0];
+                        if (track && track.getCapabilities) {
+                            const capabilities = track.getCapabilities();
+                            if (capabilities.width && capabilities.width.max > 1280) {
+                                track.applyConstraints({
+                                    width: { ideal: 1280 },
+                                    height: { ideal: 720 }
+                                });
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('Ошибка инициализации:', error);
+                document.getElementById('status').innerHTML = 
+                    '❌ Ошибка доступа к камере';
+            }
+        }
+
+        // Обработка закрытия WebApp
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && html5QrCode) {
+                try {
+                    html5QrCode.stop().then(() => {
+                        html5QrCode.clear();
+                    });
+                } catch (e) {
+                    console.error('Error stopping scanner:', e);
+                }
+            }
+        });
+
+        // Инициализация при загрузке
+        window.addEventListener('load', initScanner);
+        
+        // Обработка ошибок
+        window.addEventListener('error', (e) => {
+            console.error('Global error:', e);
+        });
     </script>
 </body>
 </html>
