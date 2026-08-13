@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Сканер QR-кодов</title>
+    <title>Сканер штрихкодов и DataMatrix</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <!-- Используем ZXing вместо html5-qrcode для лучшей поддержки DataMatrix -->
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         * {
             margin: 0;
@@ -33,20 +34,38 @@
             font-weight: bold;
         }
         
-        #reader {
+        #videoContainer {
             width: 100%;
             max-width: 500px;
-            padding: 0;
-            margin: 0;
+            position: relative;
             border-radius: 15px;
             overflow: hidden;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
         }
         
-        #reader video {
-            border-radius: 10px;
+        #video {
             width: 100%;
             height: auto;
+            display: block;
+        }
+        
+        .scan-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 300px;
+            height: 200px;
+            border: 2px solid #4CAF50;
+            border-radius: 10px;
+            pointer-events: none;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
         }
         
         .status {
@@ -108,70 +127,140 @@
         .info {
             background-color: #2196F3 !important;
         }
+        
+        .restart-btn {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background-color: #8774e1;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            display: none;
+        }
+        
+        .restart-btn:hover {
+            background-color: #7763d1;
+        }
     </style>
 </head>
 <body>
-    <div class="header">📱 Сканер штрихкодов</div>
-    <div id="reader"></div>
-    <div class="status" id="status">📸 Наведите камеру на этикетку</div>
+    <div class="header">📱 Сканер штрихкодов и DataMatrix</div>
+    <div id="videoContainer">
+        <video id="video" playsinline></video>
+        <div class="scan-overlay"></div>
+    </div>
+    <div class="status" id="status">📸 Наведите камеру на код</div>
     <div class="scanned-codes" id="scannedCodes">
         <b>Отсканированные коды:</b>
         <div id="codesList"></div>
     </div>
+    <button class="restart-btn" id="restartBtn" onclick="restartScanner()">🔄 Перезапустить сканер</button>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
 
-        let html5QrCode = null;
+        let codeReader = null;
         let isProcessing = false;
         let lastScanTime = 0;
         const SCAN_COOLDOWN = 500;
         let scannedCodes = [];
-        let cameraStream = null;
+        let videoElement = null;
+        let scanningActive = true;
 
-        // Функция для запроса разрешения камеры
-        async function requestCameraPermission() {
+        // Инициализация ZXing
+        async function initScanner() {
             try {
-                // Пытаемся получить доступ к камере напрямую
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { 
+                const status = document.getElementById('status');
+                status.innerHTML = '📸 Запуск камеры...';
+                status.className = 'status info';
+                
+                // Создаем reader
+                codeReader = new ZXing.BrowserMultiFormatReader();
+                
+                // Получаем видеопоток
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
                         facingMode: "environment",
                         width: { ideal: 1920 },
                         height: { ideal: 1080 }
-                    } 
+                    },
+                    audio: false
                 });
                 
-                cameraStream = stream;
-                console.log('✅ Разрешение камеры получено');
-                return true;
-            } catch (error) {
-                console.error('❌ Ошибка доступа к камере:', error);
+                videoElement = document.getElementById('video');
+                videoElement.srcObject = stream;
+                await videoElement.play();
                 
-                // Показываем понятное сообщение об ошибке
+                status.innerHTML = '📸 Наведите камеру на штрихкод или DataMatrix';
+                status.className = 'status';
+                
+                // Настраиваем hints для распознавания
+                const hints = new Map();
+                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+                    ZXing.BarcodeFormat.EAN_13,
+                    ZXing.BarcodeFormat.EAN_8,
+                    ZXing.BarcodeFormat.CODE_128,
+                    ZXing.BarcodeFormat.CODE_39,
+                    ZXing.BarcodeFormat.QR_CODE,
+                    ZXing.BarcodeFormat.DATA_MATRIX,
+                    ZXing.BarcodeFormat.UPC_A,
+                    ZXing.BarcodeFormat.UPC_E,
+                    ZXing.BarcodeFormat.CODABAR,
+                    ZXing.BarcodeFormat.ITF,
+                    ZXing.BarcodeFormat.AZTEC
+                ]);
+                hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+                
+                // Запускаем сканирование
+                await startScanning(hints);
+                
+            } catch (error) {
+                console.error('Ошибка инициализации:', error);
                 const status = document.getElementById('status');
+                
                 if (error.name === 'NotAllowedError') {
-                    status.innerHTML = '❌ Доступ к камере запрещен. Пожалуйста, разрешите доступ к камере в настройках Telegram.';
+                    status.innerHTML = '❌ Доступ к камере запрещен. Разрешите доступ в настройках Telegram.';
                 } else if (error.name === 'NotFoundError') {
-                    status.innerHTML = '❌ Камера не найдена на устройстве.';
-                } else if (error.name === 'NotReadableError') {
-                    status.innerHTML = '❌ Камера занята другим приложением. Закройте другие приложения и попробуйте снова.';
+                    status.innerHTML = '❌ Камера не найдена.';
                 } else {
-                    status.innerHTML = '❌ Ошибка доступа к камере. Попробуйте перезапустить сканер.';
+                    status.innerHTML = '❌ Ошибка: ' + error.message;
                 }
                 status.className = 'status error';
-                return false;
+                document.getElementById('restartBtn').style.display = 'block';
+            }
+        }
+
+        async function startScanning(hints) {
+            try {
+                await codeReader.decodeFromVideoDevice(
+                    undefined, // используем текущую камеру
+                    videoElement,
+                    (result, err) => {
+                        if (result && scanningActive) {
+                            handleScanResult(result.text);
+                        }
+                        // Игнорируем ошибки
+                    }
+                );
+            } catch (error) {
+                console.error('Ошибка сканирования:', error);
             }
         }
 
         function isLikelyBarcode(text) {
             const clean = text.trim();
             
+            // Расширенная проверка для различных типов кодов
             if (/^[A-Za-z0-9\-\.\+\/]+$/.test(clean)) {
+                // DataMatrix обычно содержит только заглавные буквы, цифры и спецсимволы
                 if (clean.length >= 10) {
                     return true;
                 }
+                // EAN-8 и EAN-13
                 if (/^\d{8}$/.test(clean) || /^\d{13}$/.test(clean)) {
                     return true;
                 }
@@ -197,7 +286,7 @@
             return barcodes;
         }
 
-        async function onScanSuccess(decodedText, decodedResult) {
+        function handleScanResult(decodedText) {
             const now = Date.now();
             
             if (isProcessing || (now - lastScanTime < SCAN_COOLDOWN)) {
@@ -241,6 +330,7 @@
             
             if (scannedCodes.length >= 2) {
                 // Нашли оба кода
+                scanningActive = false;
                 status.innerHTML = `✅ <b>Найдено кодов: ${scannedCodes.length}</b>`;
                 status.className = 'status success';
                 
@@ -250,108 +340,91 @@
                     
                     setTimeout(() => {
                         tg.close();
-                    }, 200);
+                    }, 300);
                     
                 } catch (error) {
                     console.error('Ошибка отправки:', error);
                     status.innerHTML = '❌ Ошибка отправки данных';
                     status.className = 'status error';
                     isProcessing = false;
+                    scanningActive = true;
                 }
             } else {
                 // Нашли только один код
                 status.innerHTML = `📸 <b>Найден 1 код.</b> Ищу второй...`;
                 status.className = 'status warning';
                 
+                // Воспроизводим звуковой сигнал
+                beep();
+                
                 setTimeout(() => {
                     isProcessing = false;
-                }, 100);
+                }, 200);
             }
         }
 
-        function onScanError(error) {
-            // Игнорируем ошибки сканирования
-        }
-
-        async function initScanner() {
+        function beep() {
+            // Создаем короткий звуковой сигнал
             try {
-                // Сначала запрашиваем разрешение камеры
-                const hasPermission = await requestCameraPermission();
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
                 
-                if (!hasPermission) {
-                    return;
-                }
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
                 
-                // Останавливаем stream, если он был создан
-                if (cameraStream) {
-                    cameraStream.getTracks().forEach(track => track.stop());
-                }
+                oscillator.frequency.value = 1000;
+                oscillator.type = 'sine';
                 
-                // Создаем сканер
-                html5QrCode = new Html5Qrcode("reader");
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
                 
-                const config = {
-                    fps: 30,
-                    qrbox: { width: 350, height: 250 },
-                    aspectRatio: 1.4,
-                    formatsToSupport: [
-                        Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.EAN_8,
-                        Html5QrcodeSupportedFormats.CODE_128,
-                        Html5QrcodeSupportedFormats.CODE_39,
-                        Html5QrcodeSupportedFormats.QR_CODE,
-                        Html5QrcodeSupportedFormats.UPC_A,
-                        Html5QrcodeSupportedFormats.UPC_E,
-                        Html5QrcodeSupportedFormats.CODABAR,
-                        Html5QrcodeSupportedFormats.DATA_MATRIX,
-                        Html5QrcodeSupportedFormats.ITF,
-                        Html5QrcodeSupportedFormats.AZTEC,
-                    ]
-                };
-
-                // Запускаем сканер
-                await html5QrCode.start(
-                    { 
-                        facingMode: "environment"
-                    },
-                    config,
-                    onScanSuccess,
-                    onScanError
-                );
-
-                console.log('✅ Сканер запущен');
-
-            } catch (error) {
-                console.error('Ошибка инициализации:', error);
-                const status = document.getElementById('status');
-                status.innerHTML = '❌ Ошибка инициализации сканера. Попробуйте перезапустить.';
-                status.className = 'status error';
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.1);
+            } catch (e) {
+                console.log('Звук недоступен');
             }
         }
 
-        // Обработка закрытия WebApp
+        function restartScanner() {
+            scanningActive = true;
+            scannedCodes = [];
+            isProcessing = false;
+            
+            document.getElementById('scannedCodes').style.display = 'none';
+            document.getElementById('restartBtn').style.display = 'none';
+            
+            const status = document.getElementById('status');
+            status.innerHTML = '📸 Наведите камеру на код';
+            status.className = 'status';
+            
+            initScanner();
+        }
+
+        // Остановка сканера при закрытии
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden && html5QrCode) {
-                try {
-                    html5QrCode.stop().then(() => {
-                        html5QrCode.clear();
-                    });
-                } catch (e) {
-                    console.error('Error stopping scanner:', e);
+            if (document.hidden) {
+                scanningActive = false;
+                if (codeReader) {
+                    try {
+                        codeReader.reset();
+                    } catch (e) {
+                        console.error('Error stopping scanner:', e);
+                    }
+                }
+                if (videoElement && videoElement.srcObject) {
+                    videoElement.srcObject.getTracks().forEach(track => track.stop());
                 }
             }
         });
 
-        // Запуск сканера при загрузке
+        // Запуск при загрузке
         window.addEventListener('load', initScanner);
         
         // Обработка ошибок
         window.addEventListener('error', (e) => {
             console.error('Global error:', e);
         });
-        
-        // Экспортируем функции для отладки
-        window.restartScanner = initScanner;
     </script>
 </body>
 </html>
