@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Сканер штрихкодов и DataMatrix</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <!-- Используем ZXing вместо html5-qrcode для лучшей поддержки DataMatrix -->
     <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         * {
@@ -24,12 +23,11 @@
             justify-content: center;
             min-height: 100vh;
             padding: 10px;
-            overflow: hidden;
         }
         
         .header {
             text-align: center;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
             font-size: 18px;
             font-weight: bold;
         }
@@ -41,6 +39,11 @@
             border-radius: 15px;
             overflow: hidden;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            background: #000;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         
         #video {
@@ -54,9 +57,9 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 300px;
-            height: 200px;
-            border: 2px solid #4CAF50;
+            width: 80%;
+            height: 60%;
+            border: 3px solid #4CAF50;
             border-radius: 10px;
             pointer-events: none;
             animation: pulse 2s infinite;
@@ -64,12 +67,12 @@
         
         @keyframes pulse {
             0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
+            70% { box-shadow: 0 0 0 15px rgba(76, 175, 80, 0); }
             100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
         }
         
         .status {
-            margin-top: 10px;
+            margin-top: 15px;
             padding: 12px;
             background-color: #333;
             border-radius: 10px;
@@ -128,35 +131,42 @@
             background-color: #2196F3 !important;
         }
         
-        .restart-btn {
-            margin-top: 10px;
-            padding: 10px 20px;
+        .btn {
+            margin-top: 15px;
+            padding: 15px 30px;
             background-color: #8774e1;
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 14px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
             cursor: pointer;
             display: none;
+            transition: all 0.3s;
         }
         
-        .restart-btn:hover {
+        .btn:hover {
             background-color: #7763d1;
+            transform: scale(1.05);
+        }
+        
+        .btn:active {
+            transform: scale(0.95);
         }
     </style>
 </head>
 <body>
-    <div class="header">📱 Сканер штрихкодов и DataMatrix</div>
+    <div class="header">📱 Сканер штрихкодов</div>
     <div id="videoContainer">
-        <video id="video" playsinline></video>
-        <div class="scan-overlay"></div>
+        <video id="video" playsinline autoplay muted></video>
+        <div class="scan-overlay" id="scanOverlay"></div>
     </div>
-    <div class="status" id="status">📸 Наведите камеру на код</div>
+    <div class="status" id="status">🔄 Инициализация камеры...</div>
     <div class="scanned-codes" id="scannedCodes">
         <b>Отсканированные коды:</b>
         <div id="codesList"></div>
     </div>
-    <button class="restart-btn" id="restartBtn" onclick="restartScanner()">🔄 Перезапустить сканер</button>
+    <button class="btn" id="retryBtn" onclick="retryCamera()">🔄 Попробовать снова</button>
 
     <script>
         const tg = window.Telegram.WebApp;
@@ -170,37 +180,122 @@
         let scannedCodes = [];
         let videoElement = null;
         let scanningActive = true;
+        let stream = null;
 
-        // Инициализация ZXing
-        async function initScanner() {
+        // Функция для проверки поддержки камеры
+        function checkCameraSupport() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showError('❌ Ваш браузер не поддерживает доступ к камере');
+                return false;
+            }
+            return true;
+        }
+
+        // Показать ошибку
+        function showError(message) {
+            const status = document.getElementById('status');
+            status.innerHTML = message;
+            status.className = 'status error';
+            document.getElementById('retryBtn').style.display = 'block';
+            document.getElementById('scanOverlay').style.display = 'none';
+        }
+
+        // Показать информацию
+        function showInfo(message) {
+            const status = document.getElementById('status');
+            status.innerHTML = message;
+            status.className = 'status info';
+        }
+
+        // Показать успех
+        function showSuccess(message) {
+            const status = document.getElementById('status');
+            status.innerHTML = message;
+            status.className = 'status success';
+        }
+
+        // Показать предупреждение
+        function showWarning(message) {
+            const status = document.getElementById('status');
+            status.innerHTML = message;
+            status.className = 'status warning';
+        }
+
+        // Запрос разрешения на камеру
+        async function requestCamera() {
             try {
-                const status = document.getElementById('status');
-                status.innerHTML = '📸 Запуск камеры...';
-                status.className = 'status info';
+                showInfo('📸 Запрос доступа к камере...');
                 
-                // Создаем reader
-                codeReader = new ZXing.BrowserMultiFormatReader();
-                
-                // Получаем видеопоток
-                const stream = await navigator.mediaDevices.getUserMedia({
+                // Пытаемся получить доступ к камере
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: {
-                        facingMode: "environment",
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 }
+                        facingMode: { ideal: "environment" },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
                     },
                     audio: false
                 });
                 
+                console.log('✅ Доступ к камере получен');
+                return true;
+                
+            } catch (error) {
+                console.error('Ошибка доступа к камере:', error);
+                
+                if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                    showError('❌ Доступ к камере запрещен.<br>Пожалуйста, разрешите доступ к камере в настройках Telegram');
+                } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+                    showError('❌ Камера не найдена на устройстве');
+                } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+                    showError('❌ Камера занята другим приложением.<br>Закройте другие приложения и попробуйте снова');
+                } else if (error.name === 'OverconstrainedError') {
+                    showError('❌ Камера не поддерживает требуемые параметры.<br>Попробуйте перезапустить');
+                } else {
+                    showError('❌ Ошибка доступа к камере: ' + error.message);
+                }
+                
+                return false;
+            }
+        }
+
+        // Инициализация сканера
+        async function initScanner() {
+            try {
+                // Сбрасываем состояние
+                scanningActive = true;
+                scannedCodes = [];
+                isProcessing = false;
+                
+                document.getElementById('scannedCodes').style.display = 'none';
+                document.getElementById('retryBtn').style.display = 'none';
+                document.getElementById('scanOverlay').style.display = 'block';
+                
+                // Проверяем поддержку камеры
+                if (!checkCameraSupport()) {
+                    return;
+                }
+                
+                // Запрашиваем доступ к камере
+                const hasAccess = await requestCamera();
+                if (!hasAccess) {
+                    return;
+                }
+                
+                // Настраиваем видео
                 videoElement = document.getElementById('video');
                 videoElement.srcObject = stream;
-                await videoElement.play();
                 
-                status.innerHTML = '📸 Наведите камеру на штрихкод или DataMatrix';
-                status.className = 'status';
+                try {
+                    await videoElement.play();
+                } catch (playError) {
+                    console.error('Ошибка воспроизведения:', playError);
+                }
                 
-                // Настраиваем hints для распознавания
+                showInfo('📸 Наведите камеру на штрихкод или DataMatrix');
+                
+                // Создаем reader с правильными настройками
                 const hints = new Map();
-                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+                const formats = [
                     ZXing.BarcodeFormat.EAN_13,
                     ZXing.BarcodeFormat.EAN_8,
                     ZXing.BarcodeFormat.CODE_128,
@@ -211,44 +306,56 @@
                     ZXing.BarcodeFormat.UPC_E,
                     ZXing.BarcodeFormat.CODABAR,
                     ZXing.BarcodeFormat.ITF,
-                    ZXing.BarcodeFormat.AZTEC
-                ]);
+                    ZXing.BarcodeFormat.AZTEC,
+                    ZXing.BarcodeFormat.PDF_417
+                ];
+                
+                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
                 hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+                hints.set(ZXing.DecodeHintType.CHARACTER_SET, 'UTF-8');
+                
+                codeReader = new ZXing.BrowserMultiFormatReader(hints);
                 
                 // Запускаем сканирование
-                await startScanning(hints);
-                
-            } catch (error) {
-                console.error('Ошибка инициализации:', error);
-                const status = document.getElementById('status');
-                
-                if (error.name === 'NotAllowedError') {
-                    status.innerHTML = '❌ Доступ к камере запрещен. Разрешите доступ в настройках Telegram.';
-                } else if (error.name === 'NotFoundError') {
-                    status.innerHTML = '❌ Камера не найдена.';
-                } else {
-                    status.innerHTML = '❌ Ошибка: ' + error.message;
-                }
-                status.className = 'status error';
-                document.getElementById('restartBtn').style.display = 'block';
-            }
-        }
-
-        async function startScanning(hints) {
-            try {
-                await codeReader.decodeFromVideoDevice(
-                    undefined, // используем текущую камеру
+                codeReader.decodeFromVideoDevice(
+                    undefined,
                     videoElement,
                     (result, err) => {
                         if (result && scanningActive) {
                             handleScanResult(result.text);
                         }
-                        // Игнорируем ошибки
+                        if (err && !(err instanceof ZXing.NotFoundException)) {
+                            // Игнорируем ошибки не найденного кода
+                            console.log('Ошибка сканирования:', err);
+                        }
                     }
                 );
+                
             } catch (error) {
-                console.error('Ошибка сканирования:', error);
+                console.error('Ошибка инициализации:', error);
+                showError('❌ Ошибка инициализации: ' + error.message);
             }
+        }
+
+        // Повторная попытка
+        function retryCamera() {
+            // Останавливаем текущий поток
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (codeReader) {
+                try {
+                    codeReader.reset();
+                } catch (e) {
+                    console.log('Ошибка сброса reader:', e);
+                }
+                codeReader = null;
+            }
+            
+            // Перезапускаем
+            initScanner();
         }
 
         function isLikelyBarcode(text) {
@@ -326,13 +433,10 @@
                 }
             }
             
-            const status = document.getElementById('status');
-            
             if (scannedCodes.length >= 2) {
                 // Нашли оба кода
                 scanningActive = false;
-                status.innerHTML = `✅ <b>Найдено кодов: ${scannedCodes.length}</b>`;
-                status.className = 'status success';
+                showSuccess(`✅ <b>Найдено кодов: ${scannedCodes.length}</b>`);
                 
                 const allCodes = scannedCodes.join('|');
                 try {
@@ -344,15 +448,13 @@
                     
                 } catch (error) {
                     console.error('Ошибка отправки:', error);
-                    status.innerHTML = '❌ Ошибка отправки данных';
-                    status.className = 'status error';
+                    showError('❌ Ошибка отправки данных');
                     isProcessing = false;
                     scanningActive = true;
                 }
             } else {
                 // Нашли только один код
-                status.innerHTML = `📸 <b>Найден 1 код.</b> Ищу второй...`;
-                status.className = 'status warning';
+                showWarning('📸 <b>Найден 1 код.</b> Ищу второй...');
                 
                 // Воспроизводим звуковой сигнал
                 beep();
@@ -364,7 +466,6 @@
         }
 
         function beep() {
-            // Создаем короткий звуковой сигнал
             try {
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const oscillator = audioContext.createOscillator();
@@ -386,21 +487,6 @@
             }
         }
 
-        function restartScanner() {
-            scanningActive = true;
-            scannedCodes = [];
-            isProcessing = false;
-            
-            document.getElementById('scannedCodes').style.display = 'none';
-            document.getElementById('restartBtn').style.display = 'none';
-            
-            const status = document.getElementById('status');
-            status.innerHTML = '📸 Наведите камеру на код';
-            status.className = 'status';
-            
-            initScanner();
-        }
-
         // Остановка сканера при закрытии
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
@@ -412,14 +498,17 @@
                         console.error('Error stopping scanner:', e);
                     }
                 }
-                if (videoElement && videoElement.srcObject) {
-                    videoElement.srcObject.getTracks().forEach(track => track.stop());
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
                 }
             }
         });
 
         // Запуск при загрузке
-        window.addEventListener('load', initScanner);
+        window.addEventListener('load', () => {
+            // Небольшая задержка для полной инициализации Telegram WebApp
+            setTimeout(initScanner, 100);
+        });
         
         // Обработка ошибок
         window.addEventListener('error', (e) => {
