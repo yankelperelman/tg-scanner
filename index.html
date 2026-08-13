@@ -3,371 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Сканер штрихкодов и DataMatrix</title>
+    <title>Сканер QR-кодов</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background-color: #1a1a1a;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #212121;
             color: white;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            padding: 10px;
+            overflow: hidden;
         }
-        
-        .header {
-            text-align: center;
-            margin-bottom: 15px;
-            font-size: 18px;
-            font-weight: bold;
-        }
-        
-        #videoContainer {
+        #reader {
             width: 100%;
             max-width: 500px;
-            position: relative;
-            border-radius: 15px;
-            overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            background: #000;
-            min-height: 300px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            padding: 0;
+            margin: 0;
         }
-        
-        #video {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-        
-        .scan-overlay {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 80%;
-            height: 60%;
-            border: 3px solid #4CAF50;
+        #reader video {
             border-radius: 10px;
-            pointer-events: none;
-            animation: pulse 2s infinite;
         }
-        
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
-            70% { box-shadow: 0 0 0 15px rgba(76, 175, 80, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
-        }
-        
         .status {
-            margin-top: 15px;
-            padding: 12px;
+            margin-top: 10px;
+            padding: 10px;
             background-color: #333;
-            border-radius: 10px;
+            border-radius: 8px;
             text-align: center;
             font-size: 14px;
-            width: 90%;
-            max-width: 500px;
-            transition: all 0.3s;
         }
-        
         .scanned-codes {
             margin-top: 10px;
             padding: 10px;
             background-color: #2a2a2a;
-            border-radius: 10px;
+            border-radius: 8px;
             width: 90%;
             max-width: 500px;
             display: none;
-            animation: slideIn 0.3s ease;
         }
-        
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
         .code-item {
-            padding: 8px;
+            padding: 5px;
             margin: 5px 0;
             background-color: #3a3a3a;
             border-radius: 5px;
             font-size: 12px;
-            word-break: break-all;
-            font-family: monospace;
         }
-        
         .success {
             background-color: #4CAF50 !important;
         }
-        
         .warning {
             background-color: #FF9800 !important;
-        }
-        
-        .error {
-            background-color: #f44336 !important;
-        }
-        
-        .info {
-            background-color: #2196F3 !important;
-        }
-        
-        .btn {
-            margin-top: 15px;
-            padding: 15px 30px;
-            background-color: #8774e1;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            display: none;
-            transition: all 0.3s;
-        }
-        
-        .btn:hover {
-            background-color: #7763d1;
-            transform: scale(1.05);
-        }
-        
-        .btn:active {
-            transform: scale(0.95);
         }
     </style>
 </head>
 <body>
-    <div class="header">📱 Сканер штрихкодов</div>
-    <div id="videoContainer">
-        <video id="video" playsinline autoplay muted></video>
-        <div class="scan-overlay" id="scanOverlay"></div>
-    </div>
-    <div class="status" id="status">🔄 Инициализация камеры...</div>
+    <div id="reader"></div>
+    <div class="status" id="status">📸 Наведите камеру на штрихкод</div>
     <div class="scanned-codes" id="scannedCodes">
         <b>Отсканированные коды:</b>
         <div id="codesList"></div>
     </div>
-    <button class="btn" id="retryBtn" onclick="retryCamera()">🔄 Попробовать снова</button>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
 
-        let codeReader = null;
+        let html5QrCode = null;
         let isProcessing = false;
         let lastScanTime = 0;
         const SCAN_COOLDOWN = 500;
         let scannedCodes = [];
-        let videoElement = null;
-        let scanningActive = true;
-        let stream = null;
-
-        // Функция для проверки поддержки камеры
-        function checkCameraSupport() {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                showError('❌ Ваш браузер не поддерживает доступ к камере');
-                return false;
-            }
-            return true;
-        }
-
-        // Показать ошибку
-        function showError(message) {
-            const status = document.getElementById('status');
-            status.innerHTML = message;
-            status.className = 'status error';
-            document.getElementById('retryBtn').style.display = 'block';
-            document.getElementById('scanOverlay').style.display = 'none';
-        }
-
-        // Показать информацию
-        function showInfo(message) {
-            const status = document.getElementById('status');
-            status.innerHTML = message;
-            status.className = 'status info';
-        }
-
-        // Показать успех
-        function showSuccess(message) {
-            const status = document.getElementById('status');
-            status.innerHTML = message;
-            status.className = 'status success';
-        }
-
-        // Показать предупреждение
-        function showWarning(message) {
-            const status = document.getElementById('status');
-            status.innerHTML = message;
-            status.className = 'status warning';
-        }
-
-        // Запрос разрешения на камеру
-        async function requestCamera() {
-            try {
-                showInfo('📸 Запрос доступа к камере...');
-                
-                // Пытаемся получить доступ к камере
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: { ideal: "environment" },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                });
-                
-                console.log('✅ Доступ к камере получен');
-                return true;
-                
-            } catch (error) {
-                console.error('Ошибка доступа к камере:', error);
-                
-                if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-                    showError('❌ Доступ к камере запрещен.<br>Пожалуйста, разрешите доступ к камере в настройках Telegram');
-                } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-                    showError('❌ Камера не найдена на устройстве');
-                } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-                    showError('❌ Камера занята другим приложением.<br>Закройте другие приложения и попробуйте снова');
-                } else if (error.name === 'OverconstrainedError') {
-                    showError('❌ Камера не поддерживает требуемые параметры.<br>Попробуйте перезапустить');
-                } else {
-                    showError('❌ Ошибка доступа к камере: ' + error.message);
-                }
-                
-                return false;
-            }
-        }
-
-        // Инициализация сканера
-        async function initScanner() {
-            try {
-                // Сбрасываем состояние
-                scanningActive = true;
-                scannedCodes = [];
-                isProcessing = false;
-                
-                document.getElementById('scannedCodes').style.display = 'none';
-                document.getElementById('retryBtn').style.display = 'none';
-                document.getElementById('scanOverlay').style.display = 'block';
-                
-                // Проверяем поддержку камеры
-                if (!checkCameraSupport()) {
-                    return;
-                }
-                
-                // Запрашиваем доступ к камере
-                const hasAccess = await requestCamera();
-                if (!hasAccess) {
-                    return;
-                }
-                
-                // Настраиваем видео
-                videoElement = document.getElementById('video');
-                videoElement.srcObject = stream;
-                
-                try {
-                    await videoElement.play();
-                } catch (playError) {
-                    console.error('Ошибка воспроизведения:', playError);
-                }
-                
-                showInfo('📸 Наведите камеру на штрихкод или DataMatrix');
-                
-                // Создаем reader с правильными настройками
-                const hints = new Map();
-                const formats = [
-                    ZXing.BarcodeFormat.EAN_13,
-                    ZXing.BarcodeFormat.EAN_8,
-                    ZXing.BarcodeFormat.CODE_128,
-                    ZXing.BarcodeFormat.CODE_39,
-                    ZXing.BarcodeFormat.QR_CODE,
-                    ZXing.BarcodeFormat.DATA_MATRIX,
-                    ZXing.BarcodeFormat.UPC_A,
-                    ZXing.BarcodeFormat.UPC_E,
-                    ZXing.BarcodeFormat.CODABAR,
-                    ZXing.BarcodeFormat.ITF,
-                    ZXing.BarcodeFormat.AZTEC,
-                    ZXing.BarcodeFormat.PDF_417
-                ];
-                
-                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
-                hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-                hints.set(ZXing.DecodeHintType.CHARACTER_SET, 'UTF-8');
-                
-                codeReader = new ZXing.BrowserMultiFormatReader(hints);
-                
-                // Запускаем сканирование
-                codeReader.decodeFromVideoDevice(
-                    undefined,
-                    videoElement,
-                    (result, err) => {
-                        if (result && scanningActive) {
-                            handleScanResult(result.text);
-                        }
-                        if (err && !(err instanceof ZXing.NotFoundException)) {
-                            // Игнорируем ошибки не найденного кода
-                            console.log('Ошибка сканирования:', err);
-                        }
-                    }
-                );
-                
-            } catch (error) {
-                console.error('Ошибка инициализации:', error);
-                showError('❌ Ошибка инициализации: ' + error.message);
-            }
-        }
-
-        // Повторная попытка
-        function retryCamera() {
-            // Останавливаем текущий поток
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                stream = null;
-            }
-            
-            if (codeReader) {
-                try {
-                    codeReader.reset();
-                } catch (e) {
-                    console.log('Ошибка сброса reader:', e);
-                }
-                codeReader = null;
-            }
-            
-            // Перезапускаем
-            initScanner();
-        }
 
         function isLikelyBarcode(text) {
             const clean = text.trim();
             
-            // Расширенная проверка для различных типов кодов
             if (/^[A-Za-z0-9\-\.\+\/]+$/.test(clean)) {
-                // DataMatrix обычно содержит только заглавные буквы, цифры и спецсимволы
                 if (clean.length >= 10) {
                     return true;
                 }
-                // EAN-8 и EAN-13
                 if (/^\d{8}$/.test(clean) || /^\d{13}$/.test(clean)) {
                     return true;
                 }
@@ -393,7 +112,7 @@
             return barcodes;
         }
 
-        function handleScanResult(decodedText) {
+        async function onScanSuccess(decodedText, decodedResult) {
             const now = Date.now();
             
             if (isProcessing || (now - lastScanTime < SCAN_COOLDOWN)) {
@@ -433,10 +152,12 @@
                 }
             }
             
+            const status = document.getElementById('status');
+            
             if (scannedCodes.length >= 2) {
                 // Нашли оба кода
-                scanningActive = false;
-                showSuccess(`✅ <b>Найдено кодов: ${scannedCodes.length}</b>`);
+                status.innerHTML = `✅ <b>Найдено кодов: ${scannedCodes.length}</b>`;
+                status.className = 'status success';
                 
                 const allCodes = scannedCodes.join('|');
                 try {
@@ -444,71 +165,83 @@
                     
                     setTimeout(() => {
                         tg.close();
-                    }, 300);
+                    }, 200);
                     
                 } catch (error) {
                     console.error('Ошибка отправки:', error);
-                    showError('❌ Ошибка отправки данных');
+                    status.innerHTML = '❌ Ошибка отправки данных';
+                    status.className = 'status';
                     isProcessing = false;
-                    scanningActive = true;
                 }
             } else {
                 // Нашли только один код
-                showWarning('📸 <b>Найден 1 код.</b> Ищу второй...');
-                
-                // Воспроизводим звуковой сигнал
-                beep();
+                status.innerHTML = `📸 <b>Найден 1 код.</b> Ищу второй...`;
+                status.className = 'status warning';
                 
                 setTimeout(() => {
                     isProcessing = false;
-                }, 200);
+                }, 100);
             }
         }
 
-        function beep() {
+        function onScanError(error) {
+            // Игнорируем ошибки сканирования
+        }
+
+        async function initScanner() {
             try {
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
+                html5QrCode = new Html5Qrcode("reader");
                 
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-                
-                oscillator.frequency.value = 1000;
-                oscillator.type = 'sine';
-                
-                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
-                
-                oscillator.start(audioContext.currentTime);
-                oscillator.stop(audioContext.currentTime + 0.1);
-            } catch (e) {
-                console.log('Звук недоступен');
+                const config = {
+                    fps: 30,
+                    qrbox: { width: 350, height: 250 },
+                    aspectRatio: 1.4,
+                    formatsToSupport: [
+                        Html5QrcodeSupportedFormats.EAN_13,
+                        Html5QrcodeSupportedFormats.EAN_8,
+                        Html5QrcodeSupportedFormats.CODE_128,
+                        Html5QrcodeSupportedFormats.CODE_39,
+                        Html5QrcodeSupportedFormats.QR_CODE,
+                        Html5QrcodeSupportedFormats.UPC_A,
+                        Html5QrcodeSupportedFormats.UPC_E,
+                        Html5QrcodeSupportedFormats.CODABAR,
+                        Html5QrcodeSupportedFormats.DATA_MATRIX,
+                        Html5QrcodeSupportedFormats.ITF,
+                        Html5QrcodeSupportedFormats.AZTEC,
+                    ]
+                };
+
+                await html5QrCode.start(
+                    { facingMode: "environment" },
+                    config,
+                    onScanSuccess,
+                    onScanError
+                );
+
+                console.log('✅ Сканер запущен');
+
+            } catch (error) {
+                console.error('Ошибка инициализации:', error);
+                document.getElementById('status').innerHTML = 
+                    '❌ Ошибка: ' + error.message;
             }
         }
 
         // Остановка сканера при закрытии
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                scanningActive = false;
-                if (codeReader) {
-                    try {
-                        codeReader.reset();
-                    } catch (e) {
-                        console.error('Error stopping scanner:', e);
-                    }
-                }
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
+            if (document.hidden && html5QrCode) {
+                try {
+                    html5QrCode.stop().then(() => {
+                        html5QrCode.clear();
+                    });
+                } catch (e) {
+                    console.error('Error stopping scanner:', e);
                 }
             }
         });
 
         // Запуск при загрузке
-        window.addEventListener('load', () => {
-            // Небольшая задержка для полной инициализации Telegram WebApp
-            setTimeout(initScanner, 100);
-        });
+        window.addEventListener('load', initScanner);
         
         // Обработка ошибок
         window.addEventListener('error', (e) => {
