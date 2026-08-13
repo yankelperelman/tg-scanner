@@ -36,6 +36,8 @@
             border-radius: 8px;
             text-align: center;
             font-size: 14px;
+            width: 90%;
+            max-width: 500px;
         }
         .scanned-codes {
             margin-top: 10px;
@@ -77,16 +79,50 @@
         let html5QrCode = null;
         let isProcessing = false;
         let lastScanTime = 0;
-        const SCAN_COOLDOWN = 500;
+        const SCAN_COOLDOWN = 500; // 0.5 секунды между сканированиями
         let scannedCodes = [];
+        let cameraStream = null;
+        let scanMode = 'auto'; // 'auto' - автоматически определять, 'manual' - ручной режим
+
+        // Проверяем, есть ли сохраненное разрешение
+        function checkCameraPermission() {
+            if (navigator.permissions && navigator.permissions.query) {
+                navigator.permissions.query({ name: 'camera' })
+                    .then(permissionStatus => {
+                        if (permissionStatus.state === 'granted') {
+                            console.log('✅ Разрешение камеры уже предоставлено');
+                        } else if (permissionStatus.state === 'denied') {
+                            console.log('❌ Доступ к камере запрещен');
+                            showCameraError();
+                        } else {
+                            console.log('⚠️ Нужно запросить разрешение');
+                        }
+                    })
+                    .catch(err => console.log('Не удалось проверить разрешение:', err));
+            }
+        }
+
+        function showCameraError() {
+            document.getElementById('status').innerHTML = 
+                '❌ Доступ к камере запрещен. Разрешите доступ в настройках браузера.';
+            document.getElementById('status').className = 'status warning';
+        }
 
         function isLikelyBarcode(text) {
+            // Проверяем, похож ли текст на штрихкод
+            // Честный знак обычно содержит только цифры и имеет длину 13+ символов
+            // Обычный штрихкод EAN-13 содержит 13 цифр
+            
+            // Убираем пробелы
             const clean = text.trim();
             
+            // Проверяем на наличие только цифр и букв (для DataMatrix)
             if (/^[A-Za-z0-9\-\.\+\/]+$/.test(clean)) {
+                // Если это длинный код (более 10 символов) - вероятно штрихкод
                 if (clean.length >= 10) {
                     return true;
                 }
+                // Если это 8 или 13 цифр - это EAN
                 if (/^\d{8}$/.test(clean) || /^\d{13}$/.test(clean)) {
                     return true;
                 }
@@ -95,7 +131,11 @@
         }
 
         function extractBarcodes(text) {
+            // Функция для извлечения штрихкодов из текста
+            // Если камера захватила несколько кодов одновременно
             const barcodes = [];
+            
+            // Разделяем по возможным разделителям
             const parts = text.split(/[\s\n\r,;|]+/);
             
             for (let part of parts) {
@@ -105,6 +145,7 @@
                 }
             }
             
+            // Если не нашли разделенных кодов, проверяем весь текст
             if (barcodes.length === 0 && isLikelyBarcode(text)) {
                 barcodes.push(text.trim());
             }
@@ -115,6 +156,7 @@
         async function onScanSuccess(decodedText, decodedResult) {
             const now = Date.now();
             
+            // Защита от множественных срабатываний
             if (isProcessing || (now - lastScanTime < SCAN_COOLDOWN)) {
                 return;
             }
@@ -122,6 +164,7 @@
             isProcessing = true;
             lastScanTime = now;
             
+            // Извлекаем штрихкоды
             const barcodes = extractBarcodes(decodedText);
             
             if (barcodes.length === 0) {
@@ -152,13 +195,14 @@
                 }
             }
             
-            const status = document.getElementById('status');
-            
+            // Обновляем статус
             if (scannedCodes.length >= 2) {
-                // Нашли оба кода
-                status.innerHTML = `✅ <b>Найдено кодов: ${scannedCodes.length}</b>`;
-                status.className = 'status success';
+                // Нашли оба кода (артикул и Честный знак)
+                document.getElementById('status').innerHTML = 
+                    `✅ <b>Найдено кодов: ${scannedCodes.length}</b>`;
+                document.getElementById('status').className = 'status success';
                 
+                // Отправляем все коды в бота
                 const allCodes = scannedCodes.join('|');
                 try {
                     tg.sendData(allCodes);
@@ -169,15 +213,15 @@
                     
                 } catch (error) {
                     console.error('Ошибка отправки:', error);
-                    status.innerHTML = '❌ Ошибка отправки данных';
-                    status.className = 'status';
                     isProcessing = false;
                 }
             } else {
                 // Нашли только один код
-                status.innerHTML = `📸 <b>Найден 1 код.</b> Ищу второй...`;
-                status.className = 'status warning';
+                document.getElementById('status').innerHTML = 
+                    `📸 <b>Найден 1 код.</b> Ищу второй...`;
+                document.getElementById('status').className = 'status warning';
                 
+                // Продолжаем сканирование
                 setTimeout(() => {
                     isProcessing = false;
                 }, 100);
@@ -190,11 +234,14 @@
 
         async function initScanner() {
             try {
+                // Проверяем разрешение камеры
+                checkCameraPermission();
+                
                 html5QrCode = new Html5Qrcode("reader");
                 
                 const config = {
                     fps: 30,
-                    qrbox: { width: 350, height: 250 },
+                    qrbox: { width: 350, height: 250 }, // Увеличиваем область для захвата нескольких кодов
                     aspectRatio: 1.4,
                     formatsToSupport: [
                         Html5QrcodeSupportedFormats.EAN_13,
@@ -211,23 +258,85 @@
                     ]
                 };
 
+                // Сохраняем поток камеры для повторного использования
                 await html5QrCode.start(
-                    { facingMode: "environment" },
+                    { 
+                        facingMode: "environment",
+                        // Добавляем параметры для сохранения разрешения
+                        advanced: [{ 
+                            facingMode: "environment",
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        }]
+                    },
                     config,
                     onScanSuccess,
                     onScanError
                 );
 
-                console.log('✅ Сканер запущен');
+                // Получаем видеопоток для сохранения
+                const video = document.querySelector('#reader video');
+                if (video) {
+                    video.setAttribute('playsinline', 'true');
+                    video.setAttribute('autoplay', 'true');
+                    
+                    // Сохраняем поток
+                    if (video.srcObject) {
+                        cameraStream = video.srcObject;
+                        
+                        // Пытаемся сохранить разрешение в localStorage
+                        try {
+                            localStorage.setItem('cameraPermission', 'granted');
+                        } catch (e) {}
+                    }
+                }
 
             } catch (error) {
                 console.error('Ошибка инициализации:', error);
-                document.getElementById('status').innerHTML = 
-                    '❌ Ошибка: ' + error.message;
+                showCameraError();
             }
         }
 
-        // Остановка сканера при закрытии
+        // Функция для повторного использования камеры
+        async function reuseCamera() {
+            if (cameraStream) {
+                try {
+                    // Останавливаем старый сканер
+                    if (html5QrCode) {
+                        await html5QrCode.stop();
+                    }
+                    
+                    // Переиспользуем поток
+                    const video = document.createElement('video');
+                    video.srcObject = cameraStream;
+                    await video.play();
+                    
+                    // Пересоздаем сканер с тем же потоком
+                    html5QrCode = new Html5Qrcode("reader", video);
+                    
+                    // Продолжаем сканирование
+                    await html5QrCode.start(
+                        { facingMode: "environment" },
+                        {
+                            fps: 30,
+                            qrbox: { width: 350, height: 250 },
+                            aspectRatio: 1.4,
+                        },
+                        onScanSuccess,
+                        onScanError
+                    );
+                    
+                    console.log('✅ Камера переиспользована');
+                    return true;
+                } catch (error) {
+                    console.error('Ошибка переиспользования камеры:', error);
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        // Обработка закрытия WebApp
         document.addEventListener('visibilitychange', () => {
             if (document.hidden && html5QrCode) {
                 try {
@@ -240,7 +349,7 @@
             }
         });
 
-        // Запуск при загрузке
+        // Инициализация при загрузке
         window.addEventListener('load', initScanner);
         
         // Обработка ошибок
